@@ -2,7 +2,8 @@ import logging
 from typing import Optional, Tuple
 
 import usb
-from gs_usb.constants import CAN_EFF_FLAG, CAN_ERR_FLAG, CAN_MAX_DLC, CAN_RTR_FLAG
+from gs_usb.constants import CAN_EFF_FLAG, CAN_ERR_FLAG, CAN_RTR_FLAG
+from gs_usb.constants import GS_CAN_FLAG_FD, GS_CAN_FLAG_BRS, GS_CAN_FLAG_ESI
 from gs_usb.gs_usb import GsUsb
 from gs_usb.gs_usb_frame import GS_USB_NONE_ECHO_ID, GsUsbFrame
 
@@ -18,10 +19,12 @@ class GsUsbBus(can.BusABC):
         self,
         channel,
         bitrate,
+        data_bitrate=None,
         index=None,
         bus=None,
         address=None,
         can_filters=None,
+        flags=None,
         **kwargs,
     ):
         """
@@ -54,8 +57,11 @@ class GsUsbBus(can.BusABC):
         self.channel_info = channel
         self._can_protocol = can.CanProtocol.CAN_20
 
-        self.gs_usb.set_bitrate(bitrate)
-        self.gs_usb.start()
+        self.gs_usb.set_bitrate(bitrate=bitrate, data=False)
+        if (data_bitrate != None):
+            self.gs_usb.set_bitrate(bitrate=data_bitrate, data=True)
+
+        self.gs_usb.start(flags=flags)
 
         super().__init__(
             channel=channel,
@@ -84,14 +90,9 @@ class GsUsbBus(can.BusABC):
         if msg.is_error_frame:
             can_id = can_id | CAN_ERR_FLAG
 
-        # Pad message data
-        msg.data.extend([0x00] * (CAN_MAX_DLC - len(msg.data)))
-
-        frame = GsUsbFrame()
-        frame.can_id = can_id
-        frame.can_dlc = msg.dlc
+        frame = GsUsbFrame(can_id=can_id, is_fd=msg.is_fd, brs=msg.bitrate_switch,
+                            esi=msg.error_state_indicator, data=list(msg.data))
         frame.timestamp_us = int(msg.timestamp * 1000000)
-        frame.data = list(msg.data)
 
         try:
             self.gs_usb.send(frame)
@@ -134,9 +135,12 @@ class GsUsbBus(can.BusABC):
             is_remote_frame=frame.is_remote_frame,
             is_error_frame=frame.is_error_frame,
             channel=self.channel_info,
-            dlc=frame.can_dlc,
-            data=bytearray(frame.data)[0 : frame.can_dlc],
+            dlc=frame.length,
+            data=bytearray(frame.data)[0 : frame.length],
             is_rx=frame.echo_id == GS_USB_NONE_ECHO_ID,
+            is_fd=True if (frame.flags & GS_CAN_FLAG_FD) else False,
+            bitrate_switch=True if (frame.flags & GS_CAN_FLAG_BRS) else False,
+            error_state_indicator=True if (frame.flags & GS_CAN_FLAG_ESI) else False
         )
 
         return msg, False
